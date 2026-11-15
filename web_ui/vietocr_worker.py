@@ -56,13 +56,6 @@ def get_predictor(mode: str, device_choice: str) -> VietOCRPredictor:
 
         predictor = VietOCRPredictor(cfg)
         predictor.model.eval()
-        if dev == "cpu":
-            # Dynamic INT8 quantization speeds up Linear/LSTM/GRU layers on CPU by ~25-35%
-            predictor.model = torch.ao.quantization.quantize_dynamic(
-                predictor.model,
-                {torch.nn.Linear, torch.nn.LSTM, torch.nn.GRU},
-                dtype=torch.qint8,
-            )
         _predictors[key] = predictor
         sys.stderr.write(f"[VietOCR Worker] Ready: {mode} on {dev}!\n")
         sys.stderr.flush()
