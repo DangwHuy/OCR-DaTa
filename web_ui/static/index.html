@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="vi" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PaddleOCR Web Studio v3.0 — Xử Lý Hàng Loạt & Tùy Chọn GPU/CPU</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+      background: radial-gradient(circle at top right, #1e293b 0%, #0f172a 55%, #020617 100%);
+      min-height: 100vh;
+      color: #f8fafc;
+    }
+    .mono {
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .glass {
+      background: rgba(15, 23, 42, 0.72);
+      backdrop-filter: blur(14px);
+      border: 1px solid rgba(148, 163, 184, 0.14);
+    }
+    .drop-active {
+      border-color: #3b82f6 !important;
+      background: rgba(59, 130, 246, 0.12) !important;
+    }
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: rgba(15, 23, 42, 0.4);
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(100, 116, 139, 0.5);
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(148, 163, 184, 0.8);
+    }
+  </style>
+</head>
+<body class="antialiased selection:bg-blue-500 selection:text-white">
+
+  <!-- Top Navigation Header -->
+  <header class="sticky top-0 z-30 glass border-b border-slate-800/80">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 py-3.5 flex flex-wrap items-center justify-between gap-3">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-500/25">
+          <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+        </div>
+        <div>
+          <div class="flex items-center gap-2">
+            <h1 class="text-lg font-bold tracking-tight text-white">PaddleOCR Web Studio</h1>
+            <span class="text-xs px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-medium">v3.0 Batch + GPU/CPU</span>
+          </div>
+          <p class="text-xs text-slate-400">Hỗ trợ chạy nhiều ảnh/PDF cùng lúc • Chọn linh hoạt GPU / CPU • Đầy đủ 100% dấu Tiếng Việt</p>
+        </div>
+      </div>
+
+      <!-- Hardware Status Badge -->
+      <div class="flex items-center gap-3">
+        <div id="gpuBadge" class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-800/90 border border-slate-700 text-xs font-medium text-slate-300">
+          <span id="gpuDot" class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+          <span id="gpuText">Đang kiểm tra thiết bị...</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content -->
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 py-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+    <!-- Left Column: Upload & Configuration (5 cols) -->
+    <section class="lg:col-span-5 flex flex-col gap-5">
+
+      <!-- Upload Card (Multi-file Batch Support) -->
+      <div class="glass rounded-2xl p-5 shadow-xl">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-sm font-semibold text-slate-200 uppercase tracking-wider">1. Chọn 1 hoặc Nhiều Ảnh / PDF</h2>
+          <button id="sampleBtn" type="button" class="text-xs font-medium text-blue-400 hover:text-blue-300 transition flex items-center gap-1 bg-blue-500/10 hover:bg-blue-500/20 px-2.5 py-1 rounded-lg border border-blue-500/20">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
+            Dùng thử mẫu Tiếng Việt
+          </button>
+        </div>
+
+        <label id="dropZone" for="fileInput" class="group cursor-pointer flex flex-col items-center justify-center border-2 border-dashed border-slate-700 hover:border-blue-500/70 rounded-xl p-5 transition-all text-center bg-slate-900/40 hover:bg-slate-900/70">
+          <input id="fileInput" type="file" multiple accept=".png,.jpg,.jpeg,.webp,.bmp,.tiff,.tif,.pdf" class="hidden" />
+          <div class="w-11 h-11 rounded-full bg-slate-800 group-hover:bg-blue-500/20 flex items-center justify-center mb-2.5 transition">
+            <svg class="w-6 h-6 text-slate-400 group-hover:text-blue-400 transition" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+            </svg>
+          </div>
+          <p class="text-sm font-medium text-slate-200 mb-1">
+            Kéo thả <span class="text-emerald-400 font-semibold">nhiều ảnh / PDF</span> vào đây, bấm chọn hoặc <span class="text-blue-400 underline">Ctrl+V</span>
+          </p>
+          <p class="text-xs text-slate-400">Giữ phím Ctrl hoặc Shift khi chọn file để tải lên hàng loạt ảnh cùng lúc</p>
+        </label>
+
+        <!-- Selected Files Queue List -->
+        <div id="fileQueueBox" class="hidden mt-3 space-y-2">
+          <div class="flex items-center justify-between text-xs">
+            <span id="fileCountLabel" class="font-semibold text-emerald-400">Đã chọn 0 tệp</span>
+            <button id="clearFilesBtn" type="button" class="text-rose-400 hover:text-rose-300 underline">Xóa danh sách</button>
+          </div>
+          <div id="fileListContainer" class="max-h-32 overflow-y-auto space-y-1 pr-1"></div>
+        </div>
+      </div>
+
+      <!-- Settings Card -->
+      <div class="glass rounded-2xl p-5 shadow-xl space-y-4">
+        <h2 class="text-sm font-semibold text-slate-200 uppercase tracking-wider">2. Tùy Chọn Phần Cứng & Tốc Độ</h2>
+
+        <!-- Hardware Device Selector (GPU vs CPU) -->
+        <div>
+          <label class="block text-xs font-medium text-slate-400 mb-1.5">Thiết bị xử lý (Hardware Backend)</label>
+          <div class="grid grid-cols-2 gap-2.5">
+            <label id="gpuOptionCard" class="cursor-pointer flex items-center gap-2.5 p-2.5 rounded-xl border border-blue-500 bg-blue-500/15 transition">
+              <input type="radio" name="deviceRadio" value="gpu" checked class="accent-blue-500" />
+              <div>
+                <p class="text-xs font-bold text-white">⚡ GPU (RTX 3050 Ti)</p>
+                <p class="text-[10px] text-blue-300">Khuyên dùng • Tốc độ cao</p>
+              </div>
+            </label>
+            <label id="cpuOptionCard" class="cursor-pointer flex items-center gap-2.5 p-2.5 rounded-xl border border-slate-700 bg-slate-900/60 hover:border-slate-600 transition">
+              <input type="radio" name="deviceRadio" value="cpu" class="accent-blue-500" />
+              <div>
+                <p class="text-xs font-bold text-slate-200">🖥️ CPU Đa Luồng</p>
+                <p class="text-[10px] text-slate-400">Tiết kiệm VRAM</p>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+          <div>
+            <label for="langSelect" class="block text-xs font-medium text-slate-400 mb-1.5">Ngôn ngữ & Chế độ</label>
+            <select id="langSelect" class="w-full rounded-xl bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500">
+              <option value="vi_fast" selected>🇻🇳 Tiếng Việt Siêu Tốc (Seq2Seq - Nhanh x3)</option>
+              <option value="vi_pro">🇻🇳 Tiếng Việt Chính Xác Cao (Transformer)</option>
+              <option value="en">🇬🇧 Tiếng Anh (en)</option>
+              <option value="ch">🇨🇳 Tiếng Trung (ch)</option>
+              <option value="japan">🇯🇵 Tiếng Nhật (japan)</option>
+              <option value="korean">🇰🇷 Tiếng Hàn (korean)</option>
+            </select>
+          </div>
+
+          <div>
+            <label for="versionSelect" class="block text-xs font-medium text-slate-400 mb-1.5">Kiến trúc Mô hình</label>
+            <select id="versionSelect" class="w-full rounded-xl bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500">
+              <option value="VietOCR-Seq2Seq" selected>PP-OCRv6 Det + VietOCR Seq2Seq (Nhanh)</option>
+              <option value="VietOCR-Transformer">PP-OCRv6 Det + VietOCR Transformer</option>
+              <option value="PP-OCRv6">PP-OCRv6 (Đa ngôn ngữ quốc tế)</option>
+              <option value="PP-OCRv5">PP-OCRv5 (Nhẹ)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="pt-1">
+          <div class="flex justify-between text-xs mb-1">
+            <span class="text-slate-400 font-medium">Ngưỡng độ tin cậy tối thiểu</span>
+            <span id="threshVal" class="mono text-blue-400 font-semibold">0.50</span>
+          </div>
+          <input id="threshSlider" type="range" min="0.1" max="0.95" step="0.05" value="0.50" class="w-full accent-blue-500 cursor-pointer" />
+        </div>
+
+        <label class="flex items-center gap-2.5 cursor-pointer select-none pt-1">
+          <input id="renderAnnotatedCheck" type="checkbox" checked class="w-4 h-4 rounded accent-blue-500" />
+          <span class="text-xs text-slate-300">Vẽ ảnh khoanh vùng màu <span class="text-slate-500">(Bỏ tích khi chạy >20 ảnh để tăng tốc tối đa)</span></span>
+        </label>
+
+        <button id="runBtn" type="button" class="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold text-sm shadow-lg shadow-blue-600/25 transition flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+          </svg>
+          <span id="runBtnLabel">Bắt Đầu Nhận Diện Hàng Loạt</span>
+        </button>
+      </div>
+
+      <!-- Metrics Summary Card -->
+      <div id="metricsCard" class="hidden glass rounded-2xl p-4 shadow-xl grid grid-cols-4 gap-2.5 text-center">
+        <div class="p-2 rounded-xl bg-slate-900/70 border border-slate-800">
+          <p class="text-[10px] text-slate-400">Tổng thời gian</p>
+          <p id="metricTime" class="text-sm font-bold text-emerald-400 mono mt-0.5">-</p>
+        </div>
+        <div class="p-2 rounded-xl bg-slate-900/70 border border-slate-800">
+          <p class="text-[10px] text-slate-400">Tốc độ / trang</p>
+          <p id="metricPerPage" class="text-sm font-bold text-cyan-400 mono mt-0.5">-</p>
+        </div>
+        <div class="p-2 rounded-xl bg-slate-900/70 border border-slate-800">
+          <p class="text-[10px] text-slate-400">Số trang / dòng</p>
+          <p id="metricLines" class="text-sm font-bold text-blue-400 mono mt-0.5">-</p>
+        </div>
+        <div class="p-2 rounded-xl bg-slate-900/70 border border-slate-800">
+          <p class="text-[10px] text-slate-400">Độ tin cậy TB</p>
+          <p id="metricConf" class="text-sm font-bold text-amber-400 mono mt-0.5">-</p>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- Right Column: Results & Visual Preview (7 cols) -->
+    <section class="lg:col-span-7 flex flex-col gap-5">
+
+      <div class="glass rounded-2xl p-5 shadow-xl flex flex-col min-h-[580px]">
+        <!-- Tabs & Actions Header -->
+        <div class="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-800">
+          <div class="flex items-center gap-1.5 bg-slate-900/90 p-1 rounded-xl border border-slate-800">
+            <button data-tab="text" class="tab-btn px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-blue-600 text-white transition">
+              Văn Bản Trích Xuất
+            </button>
+            <button data-tab="visual" class="tab-btn px-3.5 py-1.5 rounded-lg text-xs font-semibold text-slate-400 hover:text-white transition">
+              Ảnh Khoanh Vùng
+            </button>
+            <button data-tab="table" class="tab-btn px-3.5 py-1.5 rounded-lg text-xs font-semibold text-slate-400 hover:text-white transition">
+              Bảng Chi Tiết
+            </button>
+          </div>
+
+          <div class="flex items-center gap-2">
+            <button id="copyTextBtn" type="button" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-200 transition flex items-center gap-1.5 border border-slate-700">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+              </svg>
+              <span>Sao chép tất cả</span>
+            </button>
+            <button id="downloadTxtBtn" type="button" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-200 transition border border-slate-700">
+              Tải .TXT
+            </button>
+            <button id="downloadJsonBtn" type="button" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-200 transition border border-slate-700">
+              Tải .JSON
+            </button>
+          </div>
+        </div>
+
+        <!-- Page / File Filter Bar (shown when multiple files/pages are processed) -->
+        <div id="pageFilterBar" class="hidden pt-3 flex items-center justify-between gap-2 text-xs">
+          <span id="engineInfoBadge" class="text-slate-400 mono text-[11px]"></span>
+          <div class="flex items-center gap-2">
+            <span class="text-slate-400">Xem tệp/trang:</span>
+            <select id="pageSelect" class="rounded-lg bg-slate-900 border border-slate-700 px-2.5 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500">
+              <option value="all">Tất cả các trang</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Loading State -->
+        <div id="loadingBox" class="hidden flex-1 flex flex-col items-center justify-center py-16 text-center">
+          <div class="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4"></div>
+          <p id="loadingTitle" class="text-sm font-semibold text-slate-200">Đang xử lý OCR hàng loạt...</p>
+          <p class="text-xs text-slate-400 mt-1 max-w-sm">Hệ thống đang gom tất cả các dòng văn bản từ các ảnh để giải mã song song trong 1 lượt.</p>
+        </div>
+
+        <!-- Empty State -->
+        <div id="emptyBox" class="flex-1 flex flex-col items-center justify-center py-16 text-center text-slate-400">
+          <svg class="w-16 h-16 text-slate-700 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.4" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+          </svg>
+          <p class="text-sm font-medium text-slate-300">Sẵn sàng xử lý 1 hoặc nhiều ảnh cùng lúc</p>
+          <p class="text-xs text-slate-500 mt-1">Kéo thả nhiều ảnh vào khung bên trái, chọn GPU hoặc CPU rồi bấm chạy!</p>
+        </div>
+
+        <!-- Tab 1: Extracted Plain Text -->
+        <div id="tabText" class="hidden flex-1 pt-3 flex flex-col">
+          <textarea id="fullTextArea" readonly class="w-full flex-1 min-h-[440px] rounded-xl bg-slate-950/80 border border-slate-800 p-4 text-sm text-slate-100 mono leading-relaxed focus:outline-none focus:border-blue-500 resize-none" placeholder="Văn bản trích xuất sẽ hiển thị tại đây..."></textarea>
+        </div>
+
+        <!-- Tab 2: Visual Annotated Image -->
+        <div id="tabVisual" class="hidden flex-1 pt-3 flex flex-col gap-4 overflow-auto max-h-[500px]">
+          <div id="visualContainer" class="space-y-4"></div>
+        </div>
+
+        <!-- Tab 3: Detailed Table -->
+        <div id="tabTable" class="hidden flex-1 pt-3 overflow-auto max-h-[500px]">
+          <table class="w-full text-left border-collapse text-xs">
+            <thead>
+              <tr class="border-b border-slate-800 text-slate-400 uppercase">
+                <th class="py-2.5 px-3 w-12">#</th>
+                <th class="py-2.5 px-3 w-36">Tệp / Trang</th>
+                <th class="py-2.5 px-3">Nội dung văn bản nhận diện</th>
+                <th class="py-2.5 px-3 w-24 text-right">Độ tin cậy</th>
+              </tr>
+            </thead>
+            <tbody id="tableBody" class="divide-y divide-slate-800/60 text-slate-200"></tbody>
+          </table>
+        </div>
+
+      </div>
+
+    </section>
+
+  </main>
+
+  <script>
+    let selectedFiles = [];
+    let lastResultData = null;
+    let activeTab = 'text';
+
+    const dropZone = document.getElementById('dropZone');
+    const fileInput = document.getElementById('fileInput');
+    const fileQueueBox = document.getElementById('fileQueueBox');
+    const fileCountLabel = document.getElementById('fileCountLabel');
+    const fileListContainer = document.getElementById('fileListContainer');
+    const clearFilesBtn = document.getElementById('clearFilesBtn');
+
+    const langSelect = document.getElementById('langSelect');
+    const versionSelect = document.getElementById('versionSelect');
+    const threshSlider = document.getElementById('threshSlider');
+    const threshVal = document.getElementById('threshVal');
+    const runBtn = document.getElementById('runBtn');
+    const runBtnLabel = document.getElementById('runBtnLabel');
+    const sampleBtn = document.getElementById('sampleBtn');
+
+    const loadingBox = document.getElementById('loadingBox');
+    const loadingTitle = document.getElementById('loadingTitle');
+    const emptyBox = document.getElementById('emptyBox');
+    const tabVisual = document.getElementById('tabVisual');
+    const tabText = document.getElementById('tabText');
+    const tabTable = document.getElementById('tabTable');
+
+    const pageFilterBar = document.getElementById('pageFilterBar');
+    const pageSelect = document.getElementById('pageSelect');
+    const engineInfoBadge = document.getElementById('engineInfoBadge');
+
+    const visualContainer = document.getElementById('visualContainer');
+    const fullTextArea = document.getElementById('fullTextArea');
+    const tableBody = document.getElementById('tableBody');
+
+    const metricsCard = document.getElementById('metricsCard');
+    const metricTime = document.getElementById('metricTime');
+    const metricPerPage = document.getElementById('metricPerPage');
+    const metricLines = document.getElementById('metricLines');
+    const metricConf = document.getElementById('metricConf');
+
+    // Sync language & model dropdowns automatically
+    langSelect.addEventListener('change', () => {
+      if (langSelect.value === 'vi_fast') {
+        versionSelect.value = 'VietOCR-Seq2Seq';
+      } else if (langSelect.value === 'vi_pro') {
+        versionSelect.value = 'VietOCR-Transformer';
+      } else if (versionSelect.value.startsWith('VietOCR')) {
+        versionSelect.value = 'PP-OCRv6';
+      }
+    });
+
+    // Style GPU / CPU radio cards
+    const gpuOptionCard = document.getElementById('gpuOptionCard');
+    const cpuOptionCard = document.getElementById('cpuOptionCard');
+    document.querySelectorAll('input[name="deviceRadio"]').forEach(radio => {
+      radio.addEventListener('change', () => {
+        const val = getSelectedDevice();
+        if (val === 'gpu') {
+          gpuOptionCard.className = 'cursor-pointer flex items-center gap-2.5 p-2.5 rounded-xl border border-blue-500 bg-blue-500/15 transition';
+          cpuOptionCard.className = 'cursor-pointer flex items-center gap-2.5 p-2.5 rounded-xl border border-slate-700 bg-slate-900/60 hover:border-slate-600 transition';
+        } else {
+          cpuOptionCard.className = 'cursor-pointer flex items-center gap-2.5 p-2.5 rounded-xl border border-blue-500 bg-blue-500/15 transition';
+          gpuOptionCard.className = 'cursor-pointer flex items-center gap-2.5 p-2.5 rounded-xl border border-slate-700 bg-slate-900/60 hover:border-slate-600 transition';
+        }
+      });
+    });
+
+    function getSelectedDevice() {
+      const checked = document.querySelector('input[name="deviceRadio"]:checked');
+      return checked ? checked.value : 'gpu';
+    }
+
+    async function checkStatus() {
+      try {
+        const res = await fetch('/api/status');
+        const data = await res.json();
+        const gpuText = document.getElementById('gpuText');
+        const gpuDot = document.getElementById('gpuDot');
+        if (data.gpu_available) {
+          gpuText.textContent = `GPU: ${data.device_name} | CPU: ${data.cpu_threads} luồng`;
+          gpuDot.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-pulse';
+        } else {
+          gpuText.textContent = `Chế độ CPU (${data.cpu_threads} luồng)`;
+          gpuDot.className = 'w-2 h-2 rounded-full bg-amber-400';
+        }
+      } catch (e) {
+        document.getElementById('gpuText').textContent = 'Không thể kết nối máy chủ';
+      }
+    }
+    checkStatus();
+
+    threshSlider.addEventListener('input', () => {
+      threshVal.textContent = parseFloat(threshSlider.value).toFixed(2);
+    });
+
+    function addFilesToList(fileList) {
+      if (!fileList || fileList.length === 0) return;
+      for (const f of fileList) {
+        selectedFiles.push(f);
+      }
+      renderFileQueue();
+    }
+
+    function renderFileQueue() {
+      if (selectedFiles.length === 0) {
+        fileQueueBox.classList.add('hidden');
+        runBtnLabel.textContent = 'Bắt Đầu Nhận Diện (Chạy OCR)';
+        return;
+      }
+      fileQueueBox.classList.remove('hidden');
+      fileCountLabel.textContent = `Đã chọn ${selectedFiles.length} tệp sẵn sàng xử lý`;
+      runBtnLabel.textContent = `Nhận Diện Hàng Loạt (${selectedFiles.length} tệp)`;
+
+      fileListContainer.innerHTML = '';
+      selectedFiles.forEach((f, idx) => {
+        const item = document.createElement('div');
+        item.className = 'flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-slate-900/90 border border-slate-800 text-xs';
+        item.innerHTML = `
+          <span class="truncate max-w-[260px] text-slate-200">${idx + 1}. ${escapeHtml(f.name)} <span class="text-slate-500">(${(f.size / 1024).toFixed(1)} KB)</span></span>
+          <button type="button" data-idx="${idx}" class="remove-file-btn text-slate-400 hover:text-rose-400 px-1">✕</button>
+        `;
+        fileListContainer.appendChild(item);
+      });
+
+      document.querySelectorAll('.remove-file-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          const i = parseInt(e.currentTarget.dataset.idx, 10);
+          selectedFiles.splice(i, 1);
+          renderFileQueue();
+        });
+      });
+    }
+
+    clearFilesBtn.addEventListener('click', () => {
+      selectedFiles = [];
+      fileInput.value = '';
+      renderFileQueue();
+    });
+
+    fileInput.addEventListener('change', (e) => {
+      if (e.target.files && e.target.files.length > 0) {
+        addFilesToList(e.target.files);
+      }
+    });
+
+    ['dragenter', 'dragover'].forEach(evt => {
+      dropZone.addEventListener(evt, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropZone.classList.add('drop-active');
+      });
+    });
+    ['dragleave', 'drop'].forEach(evt => {
+      dropZone.addEventListener(evt, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropZone.classList.remove('drop-active');
+      });
+    });
+    dropZone.addEventListener('drop', (e) => {
+      if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        addFilesToList(e.dataTransfer.files);
+      }
+    });
+
+    window.addEventListener('paste', (e) => {
+      const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+      const pasted = [];
+      for (const item of items) {
+        if (item.type.indexOf('image') === 0) {
+          const blob = item.getAsFile();
+          pasted.push(new File([blob], `clipboard_${Date.now()}.png`, { type: blob.type }));
+        }
+      }
+      if (pasted.length > 0) addFilesToList(pasted);
+    });
+
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        activeTab = btn.dataset.tab;
+        document.querySelectorAll('.tab-btn').forEach(b => {
+          if (b.dataset.tab === activeTab) {
+            b.className = 'tab-btn px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-blue-600 text-white transition';
+          } else {
+            b.className = 'tab-btn px-3.5 py-1.5 rounded-lg text-xs font-semibold text-slate-400 hover:text-white transition';
+          }
+        });
+        updateTabVisibility();
+      });
+    });
+
+    function updateTabVisibility() {
+      if (!lastResultData) return;
+      tabVisual.classList.toggle('hidden', activeTab !== 'visual');
+      tabText.classList.toggle('hidden', activeTab !== 'text');
+      tabTable.classList.toggle('hidden', activeTab !== 'table');
+    }
+
+    async function executeOCR(useSample = false) {
+      if (!useSample && selectedFiles.length === 0) {
+        alert('Vui lòng chọn ít nhất 1 ảnh/PDF hoặc bấm "Dùng thử mẫu Tiếng Việt"!');
+        return;
+      }
+
+      const formData = new FormData();
+      if (useSample) {
+        formData.append('use_sample', 'true');
+      } else {
+        selectedFiles.forEach(f => formData.append('files', f));
+      }
+
+      const deviceChoice = getSelectedDevice();
+      formData.append('device', deviceChoice);
+      formData.append('lang', langSelect.value);
+      formData.append('ocr_version', versionSelect.value);
+      formData.append('score_thresh', threshSlider.value);
+      formData.append('render_annotated', document.getElementById('renderAnnotatedCheck').checked ? 'true' : 'false');
+
+      runBtn.disabled = true;
+      emptyBox.classList.add('hidden');
+      tabVisual.classList.add('hidden');
+      tabText.classList.add('hidden');
+      tabTable.classList.add('hidden');
+      loadingTitle.textContent = `Đang chạy OCR trên ${deviceChoice.toUpperCase()} (${useSample ? 1 : selectedFiles.length} tệp)...`;
+      loadingBox.classList.remove('hidden');
+
+      try {
+        const res = await fetch('/api/ocr', {
+          method: 'POST',
+          body: formData
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.detail || 'Lỗi khi nhận diện OCR');
+        }
+        renderResults(data);
+      } catch (err) {
+        alert(err.message);
+        emptyBox.classList.remove('hidden');
+      } finally {
+        loadingBox.classList.add('hidden');
+        runBtn.disabled = false;
+      }
+    }
+
+    function renderResults(data) {
+      lastResultData = data;
+
+      metricsCard.classList.remove('hidden');
+      metricTime.textContent = `${(data.elapsed_ms / 1000).toFixed(2)}s`;
+      metricPerPage.textContent = `${(data.ms_per_page / 1000).toFixed(2)}s`;
+      metricLines.textContent = `${data.page_count} tr / ${data.total_lines} d`;
+      metricConf.textContent = `${(data.avg_confidence * 100).toFixed(1)}%`;
+
+      pageFilterBar.classList.remove('hidden');
+      engineInfoBadge.textContent = `⚙️ ${data.engine_used}`;
+
+      pageSelect.innerHTML = '<option value="all">Tất cả các tệp / trang (' + data.pages.length + ')</option>';
+      data.pages.forEach((p, idx) => {
+        const opt = document.createElement('option');
+        opt.value = String(idx);
+        opt.textContent = `Trang ${p.page}: ${p.filename} (${p.line_count} dòng)`;
+        pageSelect.appendChild(opt);
+      });
+
+      renderFilteredPage('all');
+      updateTabVisibility();
+    }
+
+    pageSelect.addEventListener('change', () => {
+      renderFilteredPage(pageSelect.value);
+    });
+
+    function renderFilteredPage(filterVal) {
+      if (!lastResultData) return;
+      const pages = filterVal === 'all'
+        ? lastResultData.pages
+        : [lastResultData.pages[parseInt(filterVal, 10)]];
+
+      // 1. Plain text
+      if (filterVal === 'all') {
+        fullTextArea.value = lastResultData.full_text || '';
+      } else {
+        fullTextArea.value = pages[0].text || '';
+      }
+
+      // 2. Visual images
+      visualContainer.innerHTML = '';
+      pages.forEach(page => {
+        if (page.annotated_image) {
+          const wrapper = document.createElement('div');
+          wrapper.className = 'rounded-xl overflow-hidden border border-slate-800 bg-slate-950/60 p-2';
+          wrapper.innerHTML = `
+            <div class="text-xs text-slate-400 mb-2 px-1 flex justify-between">
+              <span class="font-medium text-slate-200">📄 ${escapeHtml(page.filename)} — Trang ${page.page} (${page.width}×${page.height}px)</span>
+              <span>Phát hiện ${page.line_count} vùng chữ</span>
+            </div>
+            <img src="${page.annotated_image}" alt="Annotated OCR Page ${page.page}" class="w-full h-auto rounded-lg object-contain max-h-[520px] mx-auto" />
+          `;
+          visualContainer.appendChild(wrapper);
+        } else {
+          const note = document.createElement('div');
+          note.className = 'p-4 rounded-xl bg-slate-900/50 border border-slate-800 text-xs text-slate-400 text-center';
+          note.textContent = `Đã tắt vẽ ảnh khoanh vùng cho [${page.filename}] để tối ưu tốc độ.`;
+          visualContainer.appendChild(note);
+        }
+      });
+
+      // 3. Detailed table
+      tableBody.innerHTML = '';
+      pages.forEach(page => {
+        page.items.forEach(item => {
+          const tr = document.createElement('tr');
+          tr.className = 'hover:bg-slate-800/40 transition';
+          const confPct = (item.confidence * 100).toFixed(1);
+          const badgeColor = item.confidence >= 0.85
+            ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30'
+            : item.confidence >= 0.65
+              ? 'text-amber-400 bg-amber-500/10 border-amber-500/30'
+              : 'text-rose-400 bg-rose-500/10 border-rose-500/30';
+
+          tr.innerHTML = `
+            <td class="py-2 px-3 mono text-slate-400">${item.id}</td>
+            <td class="py-2 px-3 text-slate-400 truncate max-w-[140px]" title="${escapeHtml(page.filename)}">${escapeHtml(page.filename)}</td>
+            <td class="py-2 px-3 font-medium text-slate-100 select-all">${escapeHtml(item.text)}</td>
+            <td class="py-2 px-3 text-right">
+              <span class="mono px-2 py-0.5 rounded-md border text-[11px] ${badgeColor}">${confPct}%</span>
+            </td>
+          `;
+          tableBody.appendChild(tr);
+        });
+      });
+    }
+
+    function escapeHtml(str) {
+      return String(str).replace(/[&<>"']/g, m => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[m]));
+    }
+
+    runBtn.addEventListener('click', () => executeOCR(false));
+    sampleBtn.addEventListener('click', () => executeOCR(true));
+
+    document.getElementById('copyTextBtn').addEventListener('click', async () => {
+      if (!fullTextArea.value) return;
+      await navigator.clipboard.writeText(fullTextArea.value);
+      const btn = document.getElementById('copyTextBtn');
+      const oldHtml = btn.innerHTML;
+      btn.textContent = '✓ Đã sao chép!';
+      setTimeout(() => { btn.innerHTML = oldHtml; }, 1500);
+    });
+
+    document.getElementById('downloadTxtBtn').addEventListener('click', () => {
+      if (!lastResultData) return;
+      const blob = new Blob([lastResultData.full_text], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `ocr_batch_${Date.now()}.txt`;
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    document.getElementById('downloadJsonBtn').addEventListener('click', () => {
+      if (!lastResultData) return;
+      const exportData = { ...lastResultData };
+      exportData.pages = exportData.pages.map(p => ({
+        page: p.page,
+        filename: p.filename,
+        width: p.width,
+        height: p.height,
+        line_count: p.line_count,
+        text: p.text,
+        items: p.items
+      }));
+      const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `ocr_batch_${Date.now()}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+  </script>
+</body>
+</html>
