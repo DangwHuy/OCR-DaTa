@@ -103,10 +103,11 @@ def get_det_engine(model_name: str = "PP-OCRv5_mobile_det", device_choice: str =
     with _ocr_lock:
         if key not in _det_instances:
             print(f"[PaddleOCR Web] Đang khởi tạo {model_name} trên {p_dev.upper()}...")
-            _det_instances[key] = TextDetection(
-                model_name=model_name,
-                device=p_dev,
-            )
+            kwargs: Dict[str, Any] = {"model_name": model_name, "device": p_dev}
+            if p_dev == "cpu":
+                kwargs["cpu_threads"] = os.cpu_count() or 8
+                kwargs["enable_mkldnn"] = True
+            _det_instances[key] = TextDetection(**kwargs)
         return _det_instances[key]
 
 
@@ -118,14 +119,18 @@ def get_ocr_engine(lang: str = "en", ocr_version: str = "PP-OCRv6", device_choic
     with _ocr_lock:
         if key not in _ocr_instances:
             print(f"[PaddleOCR Web] Đang khởi tạo PaddleOCR ({actual_lang}, {actual_ver}) trên {p_dev.upper()}...")
-            _ocr_instances[key] = PaddleOCR(
-                lang=actual_lang,
-                ocr_version=actual_ver,
-                device=p_dev,
-                use_doc_orientation_classify=False,
-                use_doc_unwarping=False,
-                use_textline_orientation=False,
-            )
+            kwargs: Dict[str, Any] = {
+                "lang": actual_lang,
+                "ocr_version": actual_ver,
+                "device": p_dev,
+                "use_doc_orientation_classify": False,
+                "use_doc_unwarping": False,
+                "use_textline_orientation": False,
+            }
+            if p_dev == "cpu":
+                kwargs["cpu_threads"] = os.cpu_count() or 8
+                kwargs["enable_mkldnn"] = True
+            _ocr_instances[key] = PaddleOCR(**kwargs)
         return _ocr_instances[key]
 
 

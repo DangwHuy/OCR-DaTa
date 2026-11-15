@@ -16,7 +16,7 @@ from PIL import Image
 from vietocr.tool.config import Cfg
 from vietocr.tool.predictor import Predictor as VietOCRPredictor
 
-torch.set_num_threads(max(4, (os.cpu_count() or 8) - 2))
+torch.set_num_threads(os.cpu_count() or 8)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _predictors = {}
@@ -54,7 +54,16 @@ def get_predictor(mode: str, device_choice: str) -> VietOCRPredictor:
         cfg["dataset"]["image_min_width"] = 32
         cfg["dataset"]["image_max_width"] = 768
 
-        _predictors[key] = VietOCRPredictor(cfg)
+        predictor = VietOCRPredictor(cfg)
+        predictor.model.eval()
+        if dev == "cpu":
+            # Dynamic INT8 quantization speeds up Linear/LSTM/GRU layers on CPU by ~25-35%
+            predictor.model = torch.ao.quantization.quantize_dynamic(
+                predictor.model,
+                {torch.nn.Linear, torch.nn.LSTM, torch.nn.GRU},
+                dtype=torch.qint8,
+            )
+        _predictors[key] = predictor
         sys.stderr.write(f"[VietOCR Worker] Ready: {mode} on {dev}!\n")
         sys.stderr.flush()
     return _predictors[key]
@@ -85,7 +94,8 @@ def main():
                     pil_imgs.append(Image.open(io.BytesIO(img_bytes)).convert("RGB"))
 
                 if pil_imgs:
-                    texts, probs = predictor.predict_batch(pil_imgs, return_prob=True)
+                    with torch.inference_mode():
+                        texts, probs = predictor.predict_batch(pil_imgs, return_prob=True)
                     probs_list = [float(p) if p is not None else 0.9 for p in probs]
                 else:
                     texts, probs_list = [], []
