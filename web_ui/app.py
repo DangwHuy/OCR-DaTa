@@ -103,7 +103,11 @@ def get_det_engine(model_name: str = "PP-OCRv5_mobile_det", device_choice: str =
     with _ocr_lock:
         if key not in _det_instances:
             print(f"[PaddleOCR Web] Đang khởi tạo {model_name} trên {p_dev.upper()}...")
-            kwargs: Dict[str, Any] = {"model_name": model_name, "device": p_dev}
+            kwargs: Dict[str, Any] = {
+                "model_name": model_name,
+                "device": p_dev,
+                "unclip_ratio": 1.7,
+            }
             if p_dev == "cpu":
                 kwargs["cpu_threads"] = os.cpu_count() or 8
                 kwargs["enable_mkldnn"] = True
@@ -148,8 +152,8 @@ def crop_polygon_b64(img_bgr: np.ndarray, poly: List[List[float]]) -> str:
         crop_w = max(int(max(w1, w2)), 8)
         crop_h = max(int(max(h1, h2)), 8)
 
-        pad_y = max(2, int(crop_h * 0.08))
-        pad_x = max(2, int(crop_w * 0.02))
+        pad_y = max(4, int(crop_h * 0.18))
+        pad_x = max(3, int(crop_w * 0.03))
         dst = np.array(
             [
                 [pad_x, pad_y],
@@ -169,28 +173,33 @@ def crop_polygon_b64(img_bgr: np.ndarray, poly: List[List[float]]) -> str:
         )
         if crop_h > crop_w * 2.2 and crop_h > 40:
             warped = cv2.rotate(warped, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        pil_img = Image.fromarray(cv2.cvtColor(warped, cv2.COLOR_BGR2RGB))
     else:
-        x_min = max(0, int(np.min(pts[:, 0])) - 2)
-        y_min = max(0, int(np.min(pts[:, 1])) - 3)
-        x_max = min(w_img, int(np.max(pts[:, 0])) + 2)
-        y_max = min(h_img, int(np.max(pts[:, 1])) + 3)
-        crop = img_bgr[y_min:y_max, x_min:x_max]
-        if crop.size == 0:
-            pil_img = Image.new("RGB", (64, 32), (255, 255, 255))
-        else:
-            pil_img = Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
+        x_min = max(0, int(np.min(pts[:, 0])) - 4)
+        y_min = max(0, int(np.min(pts[:, 1])) - 5)
+        x_max = min(w_img, int(np.max(pts[:, 0])) + 4)
+        y_max = min(h_img, int(np.max(pts[:, 1])) + 5)
+        warped = img_bgr[y_min:y_max, x_min:x_max]
+        if warped.size == 0:
+            warped = np.full((32, 64, 3), 255, dtype=np.uint8)
 
-    # Quantize width to 64px buckets for ultra-fast GPU batching
-    w, h = pil_img.size
-    if h > 0:
-        scaled_w = max(32, int(round(32.0 * w / h)))
+    # Ensure small text lines are upscaled cleanly to at least 32px height for crisp diacritics
+    wh, ww = warped.shape[:2]
+    if wh > 0 and wh < 32:
+        scale = 32.0 / wh
+        warped = cv2.resize(warped, (max(8, int(round(ww * scale))), 32), interpolation=cv2.INTER_CUBIC)
+        wh, ww = warped.shape[:2]
+
+    # Quantize width to 64px buckets using BORDER_REPLICATE (no harsh white seam on scanned/gray backgrounds)
+    if wh > 0:
+        scaled_w = max(32, int(round(32.0 * ww / wh)))
         bucket_w = int(math.ceil(scaled_w / 64.0) * 64)
-        target_orig_w = int(round(bucket_w * h / 32.0))
-        if target_orig_w > w:
-            padded = Image.new("RGB", (target_orig_w, h), (255, 255, 255))
-            padded.paste(pil_img, (0, 0))
-            pil_img = padded
+        target_orig_w = int(round(bucket_w * wh / 32.0))
+        if target_orig_w > ww:
+            warped = cv2.copyMakeBorder(
+                warped, 0, 0, 0, target_orig_w - ww, borderType=cv2.BORDER_REPLICATE
+            )
+
+    pil_img = Image.fromarray(cv2.cvtColor(warped, cv2.COLOR_BGR2RGB))
 
     buf = io.BytesIO()
     pil_img.save(buf, format="BMP")
