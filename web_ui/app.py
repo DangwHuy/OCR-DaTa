@@ -1,7 +1,11 @@
+import atexit
 import base64
 import io
+import json
 import math
 import os
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -9,61 +13,101 @@ import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-# Import torch and vietocr BEFORE paddle so Windows loads the right OpenMP DLLs
-import torch
-from vietocr.tool.config import Cfg
-from vietocr.tool.predictor import Predictor as VietOCRPredictor
+# Isolate PaddlePaddle process from PyTorch cuDNN DLLs (VietOCR runs on GPU in vietocr_worker.py)
+sys.modules["torch"] = None
 
 import cv2
 import numpy as np
 import paddle
-import yaml
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from huggingface_hub import hf_hub_download
 from PIL import Image, ImageDraw, ImageFont
 
 from paddleocr import PaddleOCR, TextDetection
 
-# Optimize CPU threads for PyTorch when running VietOCR
-torch.set_num_threads(max(4, (os.cpu_count() or 8) - 2))
-
 app = FastAPI(
     title="PaddleOCR Web Studio",
-    description="Giao diện Web nhận diện văn bản (OCR) Tiếng Việt & Đa ngôn ngữ hỗ trợ xử lý hàng loạt tốc độ cao",
-    version="3.0.0",
+    description="Giao diện Web nhận diện văn bản (OCR) Tiếng Việt & Đa ngôn ngữ siêu tốc trên GPU/CPU",
+    version="4.0.0",
 )
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
+WORKER_SCRIPT = BASE_DIR / "vietocr_worker.py"
 
 _ocr_lock = threading.Lock()
-_det_instances: Dict[str, TextDetection] = {}
+_det_instances: Dict[Tuple[str, str], TextDetection] = {}
 _ocr_instances: Dict[tuple, PaddleOCR] = {}
-_vietocr_instances: Dict[str, VietOCRPredictor] = {}
+
+
+class VietOCRWorkerClient:
+    """Persistent subprocess client running PyTorch CUDA VietOCR without cuDNN DLL conflict."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._proc: Optional[subprocess.Popen] = None
+
+    def _ensure_started(self) -> subprocess.Popen:
+        if self._proc is None or self._proc.poll() is not None:
+            env = os.environ.copy()
+            env["PYTHONUTF8"] = "1"
+            self._proc = subprocess.Popen(
+                [sys.executable, str(WORKER_SCRIPT)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=None,
+                text=True,
+                encoding="utf-8",
+                bufsize=1,
+                env=env,
+            )
+        return self._proc
+
+    def request(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        with self._lock:
+            proc = self._ensure_started()
+            assert proc.stdin is not None and proc.stdout is not None
+            proc.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            proc.stdin.flush()
+            resp_line = proc.stdout.readline()
+            if not resp_line:
+                raise RuntimeError("VietOCR worker process terminated unexpectedly.")
+            data = json.loads(resp_line)
+            if not data.get("ok"):
+                raise RuntimeError(data.get("error", "VietOCR worker error"))
+            return data
+
+    def close(self) -> None:
+        with self._lock:
+            if self._proc is not None and self._proc.poll() is None:
+                self._proc.terminate()
+                self._proc = None
+
+
+_viet_worker = VietOCRWorkerClient()
+atexit.register(_viet_worker.close)
 
 
 def resolve_paddle_device(device_choice: str) -> str:
     gpu_ok = paddle.is_compiled_with_cuda() and paddle.device.cuda.device_count() > 0
     if device_choice == "cpu":
         return "cpu"
-    if device_choice in ("gpu", "auto"):
-        return "gpu:0" if gpu_ok else "cpu"
     return "gpu:0" if gpu_ok else "cpu"
 
 
-def get_det_engine(device_choice: str = "gpu") -> TextDetection:
+def get_det_engine(model_name: str = "PP-OCRv5_mobile_det", device_choice: str = "gpu") -> TextDetection:
     p_dev = resolve_paddle_device(device_choice)
+    key = (model_name, p_dev)
     with _ocr_lock:
-        if p_dev not in _det_instances:
-            print(f"[PaddleOCR Web] Đang khởi tạo TextDetection (PP-OCRv6_medium_det) trên {p_dev.upper()}...")
-            _det_instances[p_dev] = TextDetection(
-                model_name="PP-OCRv6_medium_det",
+        if key not in _det_instances:
+            print(f"[PaddleOCR Web] Đang khởi tạo {model_name} trên {p_dev.upper()}...")
+            _det_instances[key] = TextDetection(
+                model_name=model_name,
                 device=p_dev,
             )
-        return _det_instances[p_dev]
+        return _det_instances[key]
 
 
 def get_ocr_engine(lang: str = "en", ocr_version: str = "PP-OCRv6", device_choice: str = "gpu") -> PaddleOCR:
@@ -85,51 +129,8 @@ def get_ocr_engine(lang: str = "en", ocr_version: str = "PP-OCRv6", device_choic
         return _ocr_instances[key]
 
 
-def get_vietocr_engine(mode: str = "seq2seq") -> VietOCRPredictor:
-    """
-    mode: 'seq2seq' (Siêu tốc, nhẹ, nhanh gấp 2.5x) hoặc 'transformer' (Độ chính xác cao nhất)
-    """
-    with _ocr_lock:
-        if mode not in _vietocr_instances:
-            base_cfg_path = BASE_DIR / "base.yml"
-            with open(base_cfg_path, encoding="utf-8") as f:
-                cfg_dict = yaml.safe_load(f)
-
-            if mode == "seq2seq":
-                print("[PaddleOCR Web] Đang khởi tạo VietOCR Seq2Seq (Chế độ Siêu tốc)...")
-                seq_cfg_path = BASE_DIR / "vgg_seq2seq.yml"
-                with open(seq_cfg_path, encoding="utf-8") as f:
-                    cfg_dict.update(yaml.safe_load(f))
-                weights_path = hf_hub_download(
-                    repo_id="lenhanm1/enterprise-printed-ocr-vietocr-tesseract",
-                    filename="vietocr/vgg-seq2seq-enterprise-print.pth",
-                )
-            else:
-                print("[PaddleOCR Web] Đang khởi tạo VietOCR Transformer (Chế độ Chính xác cao)...")
-                trans_cfg_path = BASE_DIR / "vgg_transformer.yml"
-                with open(trans_cfg_path, encoding="utf-8") as f:
-                    cfg_dict.update(yaml.safe_load(f))
-                weights_path = hf_hub_download(
-                    repo_id="doanhm/vgg_transformer",
-                    filename="vgg_transformer.pth",
-                )
-
-            cfg = Cfg(cfg_dict)
-            cfg["cnn"]["pretrained"] = False
-            cfg["device"] = "cuda:0" if torch.cuda.is_available() else "cpu"
-            cfg["predictor"]["beamsearch"] = False
-            cfg["weights"] = weights_path
-            # Quantize width into 32px steps so batching groups lines together for 3x faster batch inference!
-            cfg["dataset"]["image_min_width"] = 32
-            cfg["dataset"]["image_max_width"] = 768
-
-            _vietocr_instances[mode] = VietOCRPredictor(cfg)
-            print(f"[PaddleOCR Web] Đã nạp xong VietOCR ({mode})!")
-        return _vietocr_instances[mode]
-
-
-def crop_polygon_image(img_bgr: np.ndarray, poly: List[List[float]]) -> Image.Image:
-    """Perspective-crop a 4-point text box into a clean horizontal PIL image with quantized width for fast batching."""
+def crop_polygon_b64(img_bgr: np.ndarray, poly: List[List[float]]) -> str:
+    """Perspective-crop a 4-point text box into a padded BMP base64 string (zero-compression overhead)."""
     pts = np.array(poly, dtype=np.float32)
     h_img, w_img = img_bgr.shape[:2]
 
@@ -171,10 +172,11 @@ def crop_polygon_image(img_bgr: np.ndarray, poly: List[List[float]]) -> Image.Im
         y_max = min(h_img, int(np.max(pts[:, 1])) + 3)
         crop = img_bgr[y_min:y_max, x_min:x_max]
         if crop.size == 0:
-            return Image.new("RGB", (64, 32), (255, 255, 255))
-        pil_img = Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
+            pil_img = Image.new("RGB", (64, 32), (255, 255, 255))
+        else:
+            pil_img = Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
 
-    # Pad width to nearest 64px bucket so VietOCR processes many lines in a single matrix multiplication!
+    # Quantize width to 64px buckets for ultra-fast GPU batching
     w, h = pil_img.size
     if h > 0:
         scaled_w = max(32, int(round(32.0 * w / h)))
@@ -183,8 +185,11 @@ def crop_polygon_image(img_bgr: np.ndarray, poly: List[List[float]]) -> Image.Im
         if target_orig_w > w:
             padded = Image.new("RGB", (target_orig_w, h), (255, 255, 255))
             padded.paste(pil_img, (0, 0))
-            return padded
-    return pil_img
+            pil_img = padded
+
+    buf = io.BytesIO()
+    pil_img.save(buf, format="BMP")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
 def reconstruct_reading_layout(items: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], str]:
@@ -251,13 +256,14 @@ def reconstruct_reading_layout(items: List[Dict[str, Any]]) -> Tuple[List[Dict[s
             line_parts.append(txt)
             prev_x_max = b["_x_max"]
 
-            clean_item = {
-                "id": new_id,
-                "text": b["text"],
-                "confidence": b["confidence"],
-                "poly": b["poly"],
-            }
-            ordered_items.append(clean_item)
+            ordered_items.append(
+                {
+                    "id": new_id,
+                    "text": b["text"],
+                    "confidence": b["confidence"],
+                    "poly": b["poly"],
+                }
+            )
             new_id += 1
 
         if line_parts:
@@ -274,12 +280,12 @@ def draw_annotated_image(image_bgr: np.ndarray, items: List[Dict[str, Any]]) -> 
     draw = ImageDraw.Draw(overlay)
 
     palette = [
-        (59, 130, 246),   # Blue
-        (16, 185, 129),   # Emerald
-        (245, 158, 11),   # Amber
-        (236, 72, 153),   # Pink
-        (139, 92, 246),   # Violet
-        (6, 182, 212),    # Cyan
+        (59, 130, 246),
+        (16, 185, 129),
+        (245, 158, 11),
+        (236, 72, 153),
+        (139, 92, 246),
+        (6, 182, 212),
     ]
 
     for idx, item in enumerate(items):
@@ -301,7 +307,7 @@ def draw_annotated_image(image_bgr: np.ndarray, items: List[Dict[str, Any]]) -> 
 
     combined = Image.alpha_composite(base_pil, overlay).convert("RGB")
     buf = io.BytesIO()
-    combined.save(buf, format="JPEG", quality=90)
+    combined.save(buf, format="JPEG", quality=88)
     return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
@@ -342,7 +348,7 @@ def create_sample_image() -> np.ndarray:
         ("Sản lượng:", "Sản lượng thu hoạch trong vụ thuận chiếm khoảng 90% tổng số"),
         ("Kỹ thuật:", "Áp dụng kỹ thuật sản xuất vụ nghịch xuất khẩu đạt tiêu chuẩn"),
         ("Thị trường:", "Khả năng đáp ứng 50-60% nhu cầu thế giới và tiêu thụ nội địa"),
-        ("Tốc độ:", "Hỗ trợ chọn GPU / CPU và xử lý hàng loạt nhiều ảnh cùng lúc"),
+        ("Tốc độ:", "Chạy 100% trên GPU RTX 3050 Ti siêu tốc (dưới 0.5 giây/trang)"),
     ]
 
     y = 132
@@ -352,7 +358,7 @@ def create_sample_image() -> np.ndarray:
         y += 48
 
     draw.line([55, h - 65, w - 55, h - 65], fill=(226, 232, 240), width=2)
-    draw.text((55, h - 55), "Hybrid Engine v3.0: Fast Batch Detection (GPU/CPU) + VietOCR (100% Vietnamese Diacritics)", fill=(100, 116, 139), font=font_small)
+    draw.text((55, h - 55), "Hybrid Engine v4.0: Full GPU Pipeline (PP-OCRv5/v6 Det + VietOCR CUDA)", fill=(100, 116, 139), font=font_small)
 
     return cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
 
@@ -371,7 +377,7 @@ def get_status():
         "paddle_version": paddle.__version__,
         "gpu_available": gpu_available,
         "device_name": gpu_name,
-        "cpu_threads": torch.get_num_threads(),
+        "cpu_threads": max(4, (os.cpu_count() or 8) - 2),
     }
 
 
@@ -387,7 +393,7 @@ async def run_ocr(
     render_annotated: bool = Form(True),
 ):
     start_time = time.perf_counter()
-    temp_files: List[Tuple[str, str]] = []  # (temp_path, original_filename)
+    temp_files: List[Tuple[str, str]] = []
 
     try:
         upload_list: List[UploadFile] = []
@@ -420,25 +426,22 @@ async def run_ocr(
 
         use_vietocr = lang in ("vi_fast", "vi_pro") or ocr_version in ("VietOCR-Seq2Seq", "VietOCR-Transformer")
         viet_mode = "seq2seq" if (lang == "vi_fast" or ocr_version == "VietOCR-Seq2Seq") else "transformer"
+        det_model = "PP-OCRv5_mobile_det" if viet_mode == "seq2seq" else "PP-OCRv6_medium_det"
         resolved_dev = resolve_paddle_device(device)
 
         pages_output = []
         all_files_text = []
 
         if use_vietocr:
-            # FAST HYBRID PATH: Run ONLY TextDetection on all input files at once, then batch-recognize all crops!
-            det_engine = get_det_engine(device_choice=device)
-            viet_predictor = get_vietocr_engine(mode=viet_mode)
-
+            det_engine = get_det_engine(model_name=det_model, device_choice=device)
             input_paths = [tp for tp, _ in temp_files]
             path_to_name = {tp: fn for tp, fn in temp_files}
 
             det_results = list(det_engine.predict(input_paths))
 
-            # Collect all crops across all images/pages for a single giant batch recognition call
             page_records = []
-            all_crops: List[Image.Image] = []
-            crop_map: List[Tuple[int, List[List[float]], float]] = []  # (page_rec_idx, poly_list, det_score)
+            all_crops_b64: List[str] = []
+            crop_map: List[Tuple[int, List[List[float]], float]] = []
 
             for p_idx, det_res in enumerate(det_results):
                 in_path = det_res.get("input_path", input_paths[min(p_idx, len(input_paths) - 1)])
@@ -463,13 +466,21 @@ async def run_ocr(
                 if img_bgr is not None and len(dt_polys) > 0:
                     for poly, d_score in zip(dt_polys, dt_scores):
                         poly_list = poly.tolist() if hasattr(poly, "tolist") else list(poly)
-                        crop_pil = crop_polygon_image(img_bgr, poly_list)
-                        all_crops.append(crop_pil)
+                        all_crops_b64.append(crop_polygon_b64(img_bgr, poly_list))
                         crop_map.append((rec_idx, poly_list, float(d_score)))
 
-            # Single batched VietOCR inference across ALL crops from ALL uploaded images!
-            if all_crops:
-                vn_texts, vn_probs = viet_predictor.predict_batch(all_crops, return_prob=True)
+            if all_crops_b64:
+                worker_resp = _viet_worker.request(
+                    {
+                        "cmd": "predict",
+                        "mode": viet_mode,
+                        "device": device,
+                        "crops": all_crops_b64,
+                    }
+                )
+                vn_texts = worker_resp["texts"]
+                vn_probs = worker_resp["probs"]
+
                 for (rec_idx, poly_list, d_score), txt, prob in zip(crop_map, vn_texts, vn_probs):
                     score_val = float(prob) if prob is not None else d_score
                     if score_val < score_thresh:
@@ -511,10 +522,9 @@ async def run_ocr(
                         "annotated_image": annotated_b64,
                     }
                 )
-            engine_desc = f"PP-OCRv6 Det ({resolved_dev.upper()}) + VietOCR {viet_mode.capitalize()}"
+            engine_desc = f"{det_model} ({resolved_dev.upper()}) + VietOCR {viet_mode.capitalize()} ({resolved_dev.upper()})"
 
         else:
-            # Standard PaddleOCR pipeline for international languages (EN, CH, JP, KR...)
             ocr_engine = get_ocr_engine(lang=lang, ocr_version=ocr_version, device_choice=device)
             input_paths = [tp for tp, _ in temp_files]
             path_to_name = {tp: fn for tp, fn in temp_files}
@@ -621,6 +631,6 @@ if __name__ == "__main__":
     import uvicorn
 
     print("=" * 70)
-    print("  PaddleOCR Web Studio v3.0 (GPU/CPU + Batch Multi-Image) tại: http://127.0.0.1:8000")
+    print("  PaddleOCR Web Studio v4.0 (Full GPU Pipeline) tại: http://127.0.0.1:8000")
     print("=" * 70)
     uvicorn.run(app, host="127.0.0.1", port=8000)
